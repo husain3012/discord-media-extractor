@@ -37,6 +37,7 @@ import traceback
 import hashlib
 from dataclasses import dataclass, asdict
 import pickle
+import click
 
 
 # Setup logging
@@ -74,7 +75,7 @@ class DownloadCheckpoint:
 class CacheManager:
     """Manages caching for tokens, checkpoints, and other data"""
 
-    def __init__(self, cache_dir: str = ".discord_downloader_cache"):
+    def __init__(self, cache_dir: str = ".discord_downloader_cache", use_cache: bool = True):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
 
@@ -83,6 +84,8 @@ class CacheManager:
         self.channels_file = self.cache_dir / "channels.cache"
         self.checkpoints_dir = self.cache_dir / "checkpoints"
         self.checkpoints_dir.mkdir(exist_ok=True)
+        self.use_cache = use_cache
+
 
     def save_token(self, token: str) -> None:
         """Save Discord token to cache"""
@@ -511,7 +514,7 @@ class DiscordDownloader:
                 f"   Last processed: {checkpoint.total_found} files found, {checkpoint.downloaded} downloaded")
             print(f"   Checkpoint from: {checkpoint.timestamp}")
 
-            resume = input("Resume from checkpoint? (y/n): ").strip().lower()
+            resume = 'y' if self.cache_manager.use_cache else 'n'
             if resume != 'y':
                 # Delete checkpoint if not resuming
                 self.cache_manager.delete_checkpoint(guild_id, channel_id)
@@ -1064,69 +1067,155 @@ def select_from_list(items: List[Dict], name_key: str, title: str) -> List[Dict]
             print("❌ Invalid input format! Use numbers separated by commas (e.g., 1,2,3)")
 
 
-def main():
+# def main():
+#     logger = setup_logging()
+#     cache_manager = CacheManager()
+#     downloader = DiscordDownloader(logger, cache_manager)
+
+#     print("=== Discord Media Downloader ===")
+
+#     # Load token from env var or cache
+#     token = os.environ.get("DISCORD_TOKEN") or cache_manager.load_token()
+#     if not token:
+#         token = input("Enter your Discord token: ").strip()
+
+#     if not downloader.setup_auth(token):
+#         sys.exit(1)
+
+#     # Fetch guilds
+#     guilds = downloader.get_user_guilds()
+#     if not guilds:
+#         print("❌ No servers found or access denied.")
+#         sys.exit(1)
+
+#     # Let user choose guild
+#     print("\nAvailable Servers:")
+#     for idx, g in enumerate(guilds, start=1):
+#         print(f"{idx}. {g.get('name')} ({g.get('id')})")
+
+#     guild_choice = input("Select server by number: ").strip()
+#     if not guild_choice.isdigit() or int(guild_choice) < 1 or int(guild_choice) > len(guilds):
+#         print("❌ Invalid choice")
+#         sys.exit(1)
+
+#     guild = guilds[int(guild_choice) - 1]
+#     guild_id = guild["id"]
+#     guild_name = guild["name"]
+
+#     # Fetch channels
+#     channels = downloader.get_guild_channels(guild_id)
+#     if not channels:
+#         print("❌ No accessible channels found.")
+#         sys.exit(1)
+
+#     print("\nAvailable Channels:")
+#     for idx, ch in enumerate(channels, start=1):
+#         print(f"{idx}. #{ch.get('name')} ({ch.get('id')})")
+
+#     channel_choice = input("Select channel by number: ").strip()
+#     if not channel_choice.isdigit() or int(channel_choice) < 1 or int(channel_choice) > len(channels):
+#         print("❌ Invalid choice")
+#         sys.exit(1)
+
+#     channel = channels[int(channel_choice) - 1]
+#     channel_id = channel["id"]
+#     channel_name = channel["name"]
+
+#     # Ask download path
+#     default_path = Path("downloads") / guild_name / channel_name
+#     path_in = input(f"Enter download path (default: {default_path}): ").strip()
+#     download_path = Path(path_in) if path_in else default_path
+
+#     # Ask number of workers
+#     workers_in = input("Number of parallel downloads (default 5): ").strip()
+#     max_workers = int(workers_in) if workers_in.isdigit() else 5
+
+#     try:
+#         downloader.scan_and_download_channel(
+#             channel_id=channel_id,
+#             channel_name=channel_name,
+#             guild_id=guild_id,
+#             guild_name=guild_name,
+#             download_path=download_path,
+#             max_workers=max_workers
+#         )
+#     except KeyboardInterrupt:
+#         print("\n⏹️ Stopped by user.")
+#     except Exception as e:
+#         logger.error(f"Fatal error: {e}", exc_info=True)
+#         print(f"❌ Fatal error: {e}")
+
+
+@click.command()
+@click.option("--server", "-s", type=int, help="Server number from the list")
+@click.option("--channel", "-c", type=int, help="Channel number from the list")
+@click.option("--path", "-p", type=click.Path(file_okay=False), help="Download path")
+@click.option("--workers", "-w", type=int, default=5, show_default=True, help="Number of parallel downloads")
+def cli(server, channel, path, workers):
+    """Discord Media Downloader (CLI + Options via Click)"""
     logger = setup_logging()
     cache_manager = CacheManager()
     downloader = DiscordDownloader(logger, cache_manager)
 
     print("=== Discord Media Downloader ===")
 
-    # Load token from env var or cache
+    # Token
     token = os.environ.get("DISCORD_TOKEN") or cache_manager.load_token()
     if not token:
-        token = input("Enter your Discord token: ").strip()
+        print("❌ No token found (set DISCORD_TOKEN env var)")
+        sys.exit(1)
 
     if not downloader.setup_auth(token):
         sys.exit(1)
 
-    # Fetch guilds
     guilds = downloader.get_user_guilds()
     if not guilds:
         print("❌ No servers found or access denied.")
         sys.exit(1)
 
-    # Let user choose guild
-    print("\nAvailable Servers:")
-    for idx, g in enumerate(guilds, start=1):
-        print(f"{idx}. {g.get('name')} ({g.get('id')})")
+    # Server selection
+    if server:
+        if server < 1 or server > len(guilds):
+            print("❌ Invalid server number")
+            sys.exit(1)
+        guild = guilds[server - 1]
+    else:
+        # Fallback to interactive
+        for idx, g in enumerate(guilds, start=1):
+            print(f"{idx}. {g.get('name')} ({g.get('id')})")
+        choice = int(input("Select server by number: "))
+        guild = guilds[choice - 1]
 
-    guild_choice = input("Select server by number: ").strip()
-    if not guild_choice.isdigit() or int(guild_choice) < 1 or int(guild_choice) > len(guilds):
-        print("❌ Invalid choice")
-        sys.exit(1)
+    guild_id, guild_name = guild["id"], guild["name"]
 
-    guild = guilds[int(guild_choice) - 1]
-    guild_id = guild["id"]
-    guild_name = guild["name"]
-
-    # Fetch channels
+    # Channel selection
     channels = downloader.get_guild_channels(guild_id)
     if not channels:
         print("❌ No accessible channels found.")
         sys.exit(1)
 
-    print("\nAvailable Channels:")
-    for idx, ch in enumerate(channels, start=1):
-        print(f"{idx}. #{ch.get('name')} ({ch.get('id')})")
+    if channel:
+        if channel < 1 or channel > len(channels):
+            print("❌ Invalid channel number")
+            sys.exit(1)
+        ch = channels[channel - 1]
+    else:
+        for idx, c in enumerate(channels, start=1):
+            print(f"{idx}. #{c.get('name')} ({c.get('id')})")
+        choice = int(input("Select channel by number: "))
+        ch = channels[choice - 1]
 
-    channel_choice = input("Select channel by number: ").strip()
-    if not channel_choice.isdigit() or int(channel_choice) < 1 or int(channel_choice) > len(channels):
-        print("❌ Invalid choice")
-        sys.exit(1)
+    channel_id, channel_name = ch["id"], ch["name"]
 
-    channel = channels[int(channel_choice) - 1]
-    channel_id = channel["id"]
-    channel_name = channel["name"]
+    # Path
+    if path:
+        download_path = Path(path)
+    else:
+        default_path = Path("downloads") / guild_name / channel_name
+        inp = input(f"Enter download path (default: {default_path}): ").strip()
+        download_path = Path(inp) if inp else default_path
 
-    # Ask download path
-    default_path = Path("downloads") / guild_name / channel_name
-    path_in = input(f"Enter download path (default: {default_path}): ").strip()
-    download_path = Path(path_in) if path_in else default_path
-
-    # Ask number of workers
-    workers_in = input("Number of parallel downloads (default 5): ").strip()
-    max_workers = int(workers_in) if workers_in.isdigit() else 5
-
+    # Run download (no checkpoint prompt in CLI mode)
     try:
         downloader.scan_and_download_channel(
             channel_id=channel_id,
@@ -1134,7 +1223,7 @@ def main():
             guild_id=guild_id,
             guild_name=guild_name,
             download_path=download_path,
-            max_workers=max_workers
+            max_workers=workers
         )
     except KeyboardInterrupt:
         print("\n⏹️ Stopped by user.")
@@ -1144,4 +1233,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli()
